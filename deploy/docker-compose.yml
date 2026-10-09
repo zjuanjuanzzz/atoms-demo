@@ -1,0 +1,35 @@
+# Atoms Demo · Docker Compose
+#
+# 用法：
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#   打开 http://localhost:8787
+#
+# 说明：SQLite 需要持久化，所以把 data 目录挂出来；
+#      如果部署在磁盘临时的免费平台上，请改用 STORAGE=redis + Upstash。
+
+services:
+  atoms-demo:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: atoms-demo:1.0.0
+    container_name: atoms-demo
+    restart: unless-stopped
+    ports:
+      - "8787:8080"
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      STORAGE: sqlite
+      # 更推荐在界面里配模型（会存进数据库）；也可以用下面的环境变量
+      # LLM_BASE_URL: https://api.deepseek.com/v1
+      # LLM_MODEL: deepseek-chat
+      # LLM_API_KEY: 放到 .env 文件里，不要写进版本库
+    volumes:
+      - ../data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
