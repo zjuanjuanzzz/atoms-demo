@@ -1,0 +1,15 @@
+{
+  "name": "atoms-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Atoms Demo - 用一句话生成可运行、可交互、带持久化能力的网页应用",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {}
+}

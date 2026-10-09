@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atoms Demo · 用一句话生成可用的应用</title>
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+
+<!-- ============================== 注册 / 登录 ============================== -->
+<div id="auth" class="auth" hidden>
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="brand-mark">◈</span>
+      <div>
+        <div class="auth-title">Atoms Demo</div>
+        <div class="auth-sub">一句话生成可运行、可交互、数据可持久化的网页应用</div>
+      </div>
+    </div>
+
+    <div class="auth-tabs" id="authTabs">
+      <button type="button" class="tab active" data-mode="register">注册</button>
+      <button type="button" class="tab" data-mode="login">登录</button>
+    </div>
+
+    <form id="authForm">
+      <label for="authEmail">邮箱</label>
+      <input type="text" id="authEmail" autocomplete="username" placeholder="you@example.com">
+
+      <label for="authPassword">密码</label>
+      <input type="password" id="authPassword" autocomplete="current-password" placeholder="至少 6 位">
+
+      <div id="authNameWrap">
+        <label for="authName">工作区名称</label>
+        <input type="text" id="authName" placeholder="例如：我的团队">
+      </div>
+
+      <button class="btn primary auth-submit" id="authSubmit" type="submit">创建账号并进入</button>
+    </form>
+
+    <div class="auth-divider"><span>或者</span></div>
+    <button class="btn auth-guest" id="authGuest" type="button">一键体验（无需注册）</button>
+    <p class="auth-note">账号与项目数据保存在本服务的数据库里，用于演示「初始化 / 注册 / 登录」的完整流程。</p>
+  </div>
+</div>
+
+<!-- ============================== 首页 / 工作台 ============================== -->
+<div id="home" class="home">
+  <aside class="rail">
+    <div class="rail-top">
+      <div class="brand">
+        <span class="brand-mark">◈</span>
+        <div>
+          <div class="brand-name">Atoms Demo</div>
+          <div class="brand-sub">AI Agent 应用生成平台</div>
+        </div>
+      </div>
+
+      <div class="workspace" id="workspaceChip" title="点击修改工作区名称">
+        <span class="ws-avatar" id="wsAvatar">W</span>
+        <span class="ws-name" id="wsName">我的工作区</span>
+        <span class="ws-edit">✎</span>
+      </div>
+
+      <button class="new-project" id="newProjectBtn">
+        <span>＋</span> 新建项目
+      </button>
+    </div>
+
+    <div class="rail-section">
+      <div class="rail-label">我的项目</div>
+      <div id="projectList" class="project-list">
+        <div class="rail-empty">还没有项目，从右边开始吧</div>
+      </div>
+    </div>
+
+    <div class="rail-bottom">
+      <button class="env-row" id="envRow" title="配置模型与 API Key">
+        <span class="dot" id="envDot"></span>
+        <span id="envText">正在检查服务…</span>
+        <span class="env-gear">⚙</span>
+      </button>
+      <a class="rail-link" href="https://atoms.dev/" target="_blank" rel="noreferrer">参考产品：atoms.dev ↗</a>
+    </div>
+  </aside>
+
+  <main class="home-main">
+    <div class="hero">
+      <h1>把想法说出来，<span class="grad">Agent 团队</span>帮你做成能用的应用</h1>
+      <p class="hero-sub">一句话描述需求 → 产品经理拆解 → 工程师生成 → 质检自检 → 立刻得到可交互、数据可持久化的网页应用</p>
+
+      <form class="composer" id="composerForm">
+        <div class="prompt-ghost" id="promptGhost" aria-hidden="true"></div>
+        <textarea id="homePrompt" rows="3" aria-label="描述你想要的应用"></textarea>
+        <div class="composer-foot">
+          <span class="hint">⌘ / Ctrl + Enter 快速发送</span>
+          <button type="submit" class="btn primary" id="homeSend">生成应用 →</button>
+        </div>
+      </form>
+
+      <div class="example-block">
+        <div class="example-head">
+          <span class="example-head-text">不确定做什么？点一个试试</span>
+          <button type="button" class="link-btn" id="shuffleExamples">换一批 ↻</button>
+        </div>
+        <div class="examples" id="examples"></div>
+      </div>
+    </div>
+
+    <section class="team">
+      <div class="team-head">
+        <h2>你的 AI 团队</h2>
+        <span class="team-note">每次生成都会依次经过这几位 Agent</span>
+      </div>
+      <div class="team-grid" id="teamGrid"></div>
+    </section>
+
+    <section class="recent" id="recentSection" hidden>
+      <div class="team-head">
+        <h2>最近的项目</h2>
+      </div>
+      <div class="recent-grid" id="recentGrid"></div>
+    </section>
+  </main>
+</div>
+
+<!-- ================================ 项目工作台 ================================ -->
+<div id="project" class="project" hidden>
+  <header class="topbar">
+    <button class="icon-btn" id="backBtn" title="返回工作台">←</button>
+    <input class="project-title" id="projectTitle" value="未命名项目">
+    <span class="badge" id="publishBadge">草稿</span>
+
+    <div class="topbar-tabs" id="viewTabs">
+      <button class="tab active" data-tab="preview">预览</button>
+      <button class="tab" data-tab="code">代码</button>
+      <button class="tab" data-tab="data">数据</button>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="device-toggle" id="deviceToggle">
+      <button class="seg active" data-device="desktop" title="桌面预览">🖥</button>
+      <button class="seg" data-device="mobile" title="手机预览">📱</button>
+    </div>
+    <button class="icon-btn" id="refreshBtn" title="刷新预览">⟳</button>
+    <button class="icon-btn" id="settingsBtn" title="模型设置">⚙</button>
+    <button class="btn" id="historyBtn">版本历史</button>
+    <button class="btn" id="exportBtn">导出</button>
+    <button class="btn" id="shareBtn">分享</button>
+    <button class="btn primary" id="publishBtn">发布</button>
+  </header>
+
+  <div class="workspace-grid">
+    <!-- 左：对话 -->
+    <section class="chat-col">
+      <div class="chat-scroll" id="chatScroll">
+        <div class="chat-inner" id="chatInner"></div>
+      </div>
+      <form class="chat-composer" id="chatForm">
+        <textarea id="chatInput" rows="2" placeholder="描述修改，例如：加一个按结果筛选的下拉框"></textarea>
+        <div class="chat-composer-foot">
+          <span class="hint" id="chatHint">Agent 会基于当前版本修改</span>
+          <button type="submit" class="btn primary" id="chatSend">发送</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 右：App Viewer -->
+    <section class="viewer-col">
+      <div class="viewer-frame" id="viewerFrame">
+        <div class="viewer-chrome">
+          <span class="chrome-dot"></span><span class="chrome-dot"></span><span class="chrome-dot"></span>
+          <span class="chrome-url" id="chromeUrl">atoms.local / 尚未生成</span>
+          <span class="chrome-chip" id="chromeChip">等待生成</span>
+        </div>
+        <div class="viewer-body" id="viewerBody">
+          <div class="viewer-empty" id="viewerEmpty">
+            <div class="ve-icon">◈</div>
+            <h3>应用会出现在这里</h3>
+            <p>在左侧描述你的需求，Agent 生成后可以立刻点击体验。</p>
+          </div>
+          <iframe id="stage" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads" title="生成的应用"></iframe>
+          <pre class="code-view" id="codeView"></pre>
+          <div class="data-view" id="dataView"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- ================================ 弹层 ================================ -->
+<div class="modal-backdrop" id="modalBackdrop" hidden>
+  <div class="modal" id="modal"></div>
+</div>
+
+<div id="host-toast"></div>
+
+<script src="/assets/bridge.js"></script>
+<script>window.__ATOMS_APP_ID__ = null;</script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

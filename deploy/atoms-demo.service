@@ -1,0 +1,45 @@
+# Atoms Demo · systemd 服务单元
+#
+# 用法：
+#   sudo cp deploy/atoms-demo.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now atoms-demo
+#   journalctl -u atoms-demo -f          # 看日志
+#
+# 前提：代码放在 /opt/atoms-demo，跑服务用的普通用户叫 atoms（见部署说明）
+
+[Unit]
+Description=Atoms Demo - AI Agent 应用生成平台
+Documentation=file:///opt/atoms-demo/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atoms
+Group=atoms
+WorkingDirectory=/opt/atoms-demo
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning server.js
+
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=STORAGE=sqlite
+
+# 推荐：把模型配置放在应用目录之外，避免和代码一起被覆盖
+# 文件内容形如 LLM_API_KEY=sk-xxx，权限设成 600 且属主为 atoms
+# EnvironmentFile=-/etc/atoms-demo.env
+
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# 轻量加固：代码目录只读，只放行数据目录可写
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/atoms-demo/data
+
+[Install]
+WantedBy=multi-user.target
