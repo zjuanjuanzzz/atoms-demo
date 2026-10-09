@@ -1,0 +1,8 @@
+[1] register: 200 cookie? true
+[2] project: ok proj_d008172c48e943b9 len= 21
+[3] generate status: 200 text/event-stream; charset=utf-8
+[4] events: started,step,plan,step,step,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,delta,step,step,step,artifact,done
+    version.id= ver_da47014cd1a249bd len= 20 projectId= proj_d008172c48e943b9 title= 门店巡检记录
+[5] render: 200 runtime? true head: <!doctype html> <html lang="zh-CN"> <head> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, ini
+[6] detail versions: ver_da47014cd1a249bd current= ver_da47014cd1a249bd
+[7] render again: 200
