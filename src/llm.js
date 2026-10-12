@@ -4,7 +4,15 @@
  * 一个刻意的设计：没有配置 API Key 时自动进入 Mock 模式。
  * 评委点开链接时最怕的就是「演示跑不起来」，Mock 模式用一个确定性的
  * 生成器产出真实可交互、可持久化的应用，保证主流程永远能完整走通。
+ *
+ * 另一类接入：API Key 以 wbpk_ 开头时，走本部署平台自带的免密钥大模型
+ * 通道（OpenAI 兼容、仅支持流式）。鉴权靠请求头 x-wb-webapp-access-key，
+ * 不需要用户自己去任何服务商注册、充值。
  */
+
+/** 平台云通道的固定路径与请求头 */
+const WB_CLOUD_PATH = '/.cloud/llm';
+const WB_CLOUD_KEY_HEADER = 'x-wb-webapp-access-key';
 
 /**
  * 归一化接口地址，帮用户挡掉最常见的几类填错：
@@ -42,34 +50,68 @@ export function normalizeBaseUrl(raw) {
 
 export function createLLM(config) {
   const hasKey = Boolean(config.apiKey);
-  const baseUrl = normalizeBaseUrl(config.baseUrl) || 'https://api.openai.com/v1';
+  // wbpk_ 开头的 Key → 平台云通道：地址就是应用发布域名，不做 /v1 归一化
+  const cloud = hasKey && String(config.apiKey).startsWith('wbpk_');
+  const baseUrl = cloud
+    ? String(config.baseUrl || '').trim().replace(/\/+$/, '')
+    : (normalizeBaseUrl(config.baseUrl) || 'https://api.openai.com/v1');
   const model = config.model || 'gpt-4o-mini';
 
+  /** 平台云通道：模型列表懒加载 + 缓存（model 配成 auto 或留空时自动挑第一个可用模型） */
+  let cloudModelCache = '';
+  async function resolveCloudModel() {
+    if (model && model !== 'auto') return model;
+    if (cloudModelCache) return cloudModelCache;
+    const res = await fetch(`${baseUrl}${WB_CLOUD_PATH}/models`, {
+      headers: cloudHeaders(),
+      signal: AbortSignal.timeout(15000),
+    });
+    const list = await res.json().catch(() => []);
+    const usable = Array.isArray(list) ? list.find((m) => m && m.disabled !== true && m.id) : null;
+    if (!usable) throw new Error(`平台云通道未返回可用模型（HTTP ${res.status}）`);
+    cloudModelCache = usable.id;
+    return cloudModelCache;
+  }
+
+  /** 平台云通道的请求头：免密钥 Key + 标明来源域（服务端按 Origin 精确校验） */
+  function cloudHeaders(extra = {}) {
+    return {
+      [WB_CLOUD_KEY_HEADER]: config.apiKey,
+      Origin: baseUrl,
+      Referer: `${baseUrl}/`,
+      ...extra,
+    };
+  }
+
   async function request({ messages, stream, temperature = 0.7, maxTokens = 8000, jsonMode = false, signal, allowRetry = true }) {
+    // 平台云通道只支持流式；非流式请求由上层用流式累积实现
+    const forceStream = cloud;
+    const modelId = cloud ? await resolveCloudModel() : model;
     const body = {
-      model,
+      model: modelId,
       messages,
       temperature,
       max_tokens: maxTokens,
-      stream: Boolean(stream),
+      stream: Boolean(stream) || forceStream,
     };
     if (jsonMode) body.response_format = { type: 'json_object' };
+    const url = cloud ? `${baseUrl}${WB_CLOUD_PATH}/chat/completions` : `${baseUrl}/chat/completions`;
+    const headers = cloud
+      ? cloudHeaders({ 'content-type': 'application/json', accept: 'text/event-stream' })
+      : { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
     let res;
     try {
-      res = await fetch(`${baseUrl}/chat/completions`, {
+      res = await fetch(url, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${config.apiKey}`,
-        },
+        headers,
         body: JSON.stringify(body),
         signal,
       });
     } catch (err) {
       // 把底层网络错误翻译成人能看懂、能定位的说法
-      if (err.name === 'TimeoutError') throw new Error(`请求 ${baseUrl} 超时，请检查接口地址或网络状况`);
+      if (err.name === 'TimeoutError') throw new Error(`请求 ${url} 超时，请检查接口地址或网络状况`);
       if (err.name === 'AbortError') throw err;
-      throw new Error(`无法连接到 ${baseUrl}（${err.message}）：请确认接口地址正确、网络可访问该服务`);
+      throw new Error(`无法连接到 ${url}（${err.message}）：请确认接口地址正确、网络可访问该服务`);
     }
     if (!res.ok) {
       const text = await res.text();
@@ -110,6 +152,11 @@ export function createLLM(config) {
   }
 
   async function chat({ messages, temperature, maxTokens, jsonMode, signal }) {
+    if (cloud) {
+      // 平台云通道不支持非流式：用流式累积出完整正文
+      const { text } = await chatStream({ messages, temperature, maxTokens, jsonMode, signal });
+      return text;
+    }
     const res = await request({ messages, stream: false, temperature, maxTokens, jsonMode, signal });
     const json = await res.json();
     return json.choices?.[0]?.message?.content ?? '';
@@ -144,12 +191,19 @@ export function createLLM(config) {
         if (!payload || payload === '[DONE]') continue;
         try {
           const json = JSON.parse(payload);
+          // 流中错误帧（平台云通道以 {error:{...}} 形式内嵌在 data 帧里）
+          if (json && typeof json === 'object' && json.error && !json.choices) {
+            throw new Error(`模型服务返回错误：${json.error.message || JSON.stringify(json.error).slice(0, 200)}`);
+          }
           const choice = json.choices?.[0] || {};
           const delta = choice.delta || {};
           if (choice.finish_reason) finishReason = choice.finish_reason;
           if (delta.reasoning_content) { thinking += delta.reasoning_content; onThinking?.(delta.reasoning_content); }
           if (delta.content) { full += delta.content; onDelta?.(delta.content); }
-        } catch { /* 忽略无法解析的心跳 */ }
+        } catch (e) {
+          if (e instanceof Error && e.message?.startsWith('模型服务返回错误')) throw e;
+          /* 忽略无法解析的心跳 */
+        }
       }
     }
     const thinkingFallback = full.trim().length < 40 && /<\/html>/i.test(thinking);
@@ -165,6 +219,8 @@ export function createLLM(config) {
     mode: hasKey ? 'live' : 'mock',
     model: hasKey ? model : 'mock-builder',
     baseUrl,
+    /** 云通道下 model=auto 时返回真实模型名（含一次列表请求）；其余场景直接同步返回 */
+    getModel: async () => (cloud ? resolveCloudModel() : model),
     chat,
     chatStream,
   };

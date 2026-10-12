@@ -253,11 +253,16 @@ const server = http.createServer(async (req, res) => {
     /* ---- 健康检查 ---- */
     if (method === 'GET' && pathname === '/api/health') {
       const { llm, source } = await resolveLLM();
+      // 云通道 model=auto 时解析出真实模型名；失败不影响健康状态本身
+      let modelName = llm.model;
+      if (llm.mode === 'live' && llm.getModel) {
+        try { modelName = await llm.getModel(); } catch { /* 保持 llm.model */ }
+      }
       return sendJson(res, 200, {
         ok: true,
         storage: store.driver,
         llm: llm.mode,
-        model: llm.model,
+        model: modelName,
         keySource: source,
       });
     }
@@ -533,27 +538,8 @@ const server = http.createServer(async (req, res) => {
         await store.addMessage({ projectId, role: 'user', content: prompt });
         send({ type: 'started', projectId, prompt });
 
-        try {
-          const result = await runPipeline({
-            llm,
-            prompt,
-            currentHtml: previous?.html || null,
-            history: { title: previous?.title || project.title },
-            emit: (event) => send(event),
-            signal: controller.signal,
-          });
-
-          if (result.unsupported) {
-            await store.addMessage({
-              projectId,
-              role: 'assistant',
-              content: result.message,
-              meta: { needsModel: true },
-            });
-            send({ type: 'done' });
-            return undefined;
-          }
-
+        /** 生成结果的统一落库与推送 */
+        const persistResult = async (result) => {
           const version = await store.addVersion({
             projectId,
             title: result.title,
@@ -584,8 +570,53 @@ const server = http.createServer(async (req, res) => {
 
           send({ type: 'artifact', version, plan: result.plan, issues: result.issues, repaired: result.repaired });
           send({ type: 'done', versionId: version.id });
+        };
+
+        try {
+          const result = await runPipeline({
+            llm,
+            prompt,
+            currentHtml: previous?.html || null,
+            history: { title: previous?.title || project.title },
+            emit: (event) => send(event),
+            signal: controller.signal,
+          });
+
+          if (result.unsupported) {
+            await store.addMessage({
+              projectId,
+              role: 'assistant',
+              content: result.message,
+              meta: { needsModel: true },
+            });
+            send({ type: 'done' });
+            return undefined;
+          }
+
+          await persistResult(result);
         } catch (err) {
-          send({ type: 'error', message: err.message || '生成失败' });
+          const aborted = err.name === 'AbortError' || controller.signal.aborted;
+          if (aborted) {
+            send({ type: 'error', message: err.message || '生成已取消' });
+          } else {
+            // 真实模型调用失败（网络/限流/配额）→ 降级到离线生成器，保证流程永远能走完；
+            // 明确把降级原因告知，而不是静默装作成功
+            send({ type: 'notice', message: `真实模型调用失败（${err.message}），本次自动降级为离线生成器完成` });
+            try {
+              const fallback = await runPipeline({
+                llm: createLLM({}),
+                prompt,
+                currentHtml: previous?.html || null,
+                history: { title: previous?.title || project.title },
+                emit: (event) => send(event),
+                signal: controller.signal,
+              });
+              if (!fallback.unsupported) await persistResult(fallback);
+              else send({ type: 'done' });
+            } catch (e2) {
+              send({ type: 'error', message: e2.message || '生成失败' });
+            }
+          }
         } finally {
           res.end();
         }
