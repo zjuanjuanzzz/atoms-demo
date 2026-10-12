@@ -185,5 +185,34 @@ cookie = '';
 const afterLogout = await json('/api/projects');
 check('退出后访问项目返回 401', afterLogout.status === 401);
 
+console.log('\n[11] 版本管理：源码 / 导出 / 恢复');
+const reLoginRes = await fetch(`${BASE}/api/auth/login`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ email, password: 'demo1234' }),
+});
+captureCookie(reLoginRes);
+check('重新登录', reLoginRes.status === 200 && Boolean(cookie));
+
+const v1Id = artifact.version.id;
+const v2Id = after.data.project.currentVersionId;
+const rawRes = await fetch(`${BASE}/api/projects/${projectId}/versions/${v1Id}/render?raw=1`, { headers: { cookie } });
+const rawHtml = await rawRes.text();
+check('源码视图返回模型原始产物（未注入 SDK）', rawRes.status === 200 && rawHtml.includes('<!doctype html>') && !rawHtml.includes('data-atoms-runtime'));
+
+const exportRes = await fetch(`${BASE}/api/projects/${projectId}/versions/${v1Id}/export`, { headers: { cookie } });
+const exportHtml = await exportRes.text();
+check('导出单文件应用（standalone 模式，可离线运行）', exportRes.status === 200 && exportHtml.includes('data-atoms-runtime') && exportHtml.includes('localStorage'));
+check('导出走 attachment 下载', /attachment/.test(exportRes.headers.get('content-disposition') || ''));
+
+const restoreRes = await json(`/api/projects/${projectId}/versions/${v1Id}/restore`, { method: 'POST', body: {} });
+check('恢复旧版本', restoreRes.status === 200 && restoreRes.data.version?.id === v1Id);
+const detailRestored = await json(`/api/projects/${projectId}`, {});
+check('恢复后当前版本指向旧版', detailRestored.data.project.currentVersionId === v1Id);
+const renderRestored = await fetch(`${BASE}/api/projects/${projectId}/versions/${v1Id}/render`, { headers: { cookie } });
+check('恢复的旧版本仍可正常预览', renderRestored.status === 200 && (await renderRestored.text()).includes('data-atoms-runtime'));
+const backToLatest = await json(`/api/projects/${projectId}/versions/${v2Id}/restore`, { method: 'POST', body: {} });
+check('可再切回最新版本', backToLatest.status === 200 && (await json(`/api/projects/${projectId}`, {})).data.project.currentVersionId === v2Id);
+
 console.log(`\n结果：${failures === 0 ? '全部通过' : failures + ' 项失败'}\n`);
 process.exit(failures === 0 ? 0 : 1);

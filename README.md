@@ -2,9 +2,47 @@
 
 > 用一句话把想法变成**可运行、可交互、数据可持久化**的网页应用：一支有名字的 AI 团队负责拆解、生成、质检，右侧 App Viewer 立刻就能点着用，随时发布成公开链接。
 
+**在线演示**：<https://atoms-demo-02329.app.workbuddy.host/> 　**源码**：本仓库
+
 对标 [Atoms](https://atoms.dev/) 的产品形态（工作区 → 项目对话 → App Viewer → 发布公开链接），差异化的地方落在一点上：
 
 **生成物不是一坨静态 HTML，而是自带数据层的真应用。** 生成出来的页面通过 `window.atoms.store()` 读写服务端数据，刷新不丢、分享给别人的链接打开也是同一份数据。
+
+## 0. 题目要求与验收口径
+
+笔试题目原文的公开版本如下（原发布地址有访问限制，为便于评审，此处给出可公开阅读的转录）：
+
+> 在 3–4 小时内完成一个可运行的 Atoms Demo（参考 atoms.dev 的 AI Agent 平台）：
+> 1. 真实交互，非静态页面；
+> 2. 数据持久化；
+> 3. 覆盖基本使用流程：初始化 / 注册登录 / 核心主流程；
+> 4. 至少一个延展能力；
+> 5. 提供可测试的在线访问链接；
+> 6. 非 PoC，实际可用；
+> 7. 48 小时内提交，建议 3–4 小时专注开发。
+
+逐条对应关系：
+
+| 要求 | 对应实现 | 在线验证方式 |
+| --- | --- | --- |
+| 真实交互 | 生成物是可点、可填、可删的单文件应用，跑在 sandbox iframe | 生成后在「预览」里直接操作 |
+| 数据持久化 | 生成物经 `atoms.store` 写入服务端；线上部署使用 **Turso 云端 SQLite**，服务重启数据不丢 | 预览里新增一条记录 → 刷新页面 → 记录还在；「数据」页签可见同一份数据 |
+| 初始化/注册登录 | 邮箱注册、登录、一键体验账号，scrypt 加盐哈希 + httpOnly 会话 | 首页注册 → 退出 → 重新登录，项目与数据都在 |
+| 核心主流程 | 一句话需求 → 多 Agent 流式生成 → App Viewer 预览 → 发布公开链接 | 见下方「5 分钟演示脚本」 |
+| 延展能力 | ① 版本历史与回滚 ② 导出可独立运行的单文件 HTML ③ 复刻（Remix）他人已发布应用 ④ 运行时报错显式呈现 + 真实模型下自动修复 | 顶栏「版本历史 / 导出 / 分享」；分享页里「Remix」 |
+| 在线链接 | 见文首「在线演示」 | 直接打开 |
+| 非 PoC | 端到端冒烟测试 11 组全绿（`tools/smoke.mjs`），Turso 驱动另有 24 项一致性测试（`tools/turso-test.mjs`） | 本地 `node tools/smoke.mjs` 可复跑 |
+
+### 5 分钟演示脚本（对应评审口径逐条走）
+
+1. **注册登录**：打开在线链接 → 注册（或「一键体验」）。
+2. **真实模型生成**：未配置 Key 时为内置演示模式；在「模型设置」里填入任意 OpenAI 兼容接口（如智谱 `glm-4-flash`、DeepSeek）后，生成由真实模型完成，`/api/health` 显示 `llm=live` 与模型名。
+3. **生成与交互**：输入「帮我做一个门店巡检记录工具，记录巡检点位、结果和备注」→ 观察多 Agent 流式过程 → 在预览里新增几条记录（真实写入数据库）。
+4. **数据持久化**：刷新页面 / 退出登录再登录 → 项目、版本与业务数据全部还在（存储落在 Turso 云端，不依赖部署盘）。
+5. **增量迭代**：继续对话「加一个按结果筛选的下拉框」→ 生成新版本且改动生效。
+6. **代码管理**：顶栏「代码」看当前版本源码；「导出」下载单文件 HTML（双击可离线运行）；「版本历史」恢复任意旧版本，恢复后预览正常。
+7. **发布分享**：点「发布」拿 `/p/<slug>` 公开链接 → 无痕窗口打开验证 → 里面还有「Remix 到我的工作区」。
+8. **报错显式化**：生成物运行时报错会在页面底部以红色浮层呈现；接了真实模型时质检 Agent 自动修复并生成新版本。
 
 ## 界面速览
 
@@ -72,7 +110,8 @@ npm start
 | `LLM_MODEL` | 模型名 | `gpt-4o-mini` |
 | `LLM_MAX_TOKENS` | 生成代码的最大长度（多数服务商上限 8k） | `6000` |
 | `PORT` | 服务端口 | `8787` |
-| `STORAGE` | `sqlite` 或 `redis` | `sqlite` |
+| `STORAGE` | `sqlite` / `turso` / `redis`；不填时若 `TURSO_*` 两项都有值则自动启用 turso | `sqlite` |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | 云端 SQLite（libSQL/hrana HTTP，纯 fetch 零依赖），解决部署平台磁盘非持久的问题 | 空 |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | `STORAGE=redis` 时使用 | 空 |
 
 > **也可以完全不动环境变量**：界面左下角「模型设置」（项目页右上角的 ⚙ 也能进）里填写接口地址、模型名和 API Key，保存后立即生效，配置存在数据库里。生效优先级：请求里的临时覆盖 > 界面配置 > 环境变量 > 默认值。
@@ -140,12 +179,12 @@ node tools/test-live.mjs --prompt="做一个健身房课程预约工具"
 
 ### 数据持久化落在两层
 
-| 层 | 存什么 | 本地 / 容器 | 免费托管 |
+| 层 | 存什么 | 本地 / 容器 | 免费托管（磁盘非持久） |
 | --- | --- | --- | --- |
-| 平台数据 | 账号与会话、工作区、项目、对话消息、版本（含完整源码）、模型配置 | `node:sqlite`，单文件 `data/atoms.db` | Upstash Redis REST（纯 HTTP，零依赖） |
+| 平台数据 | 账号与会话、工作区、项目、对话消息、版本（含完整源码）、模型配置 | `node:sqlite`，单文件 `data/atoms.db` | **Turso 云端 SQLite**（libSQL hrana HTTP，纯 fetch 零依赖）或 Upstash Redis REST |
 | 生成物的业务数据 | 生成的应用通过 `atoms.store` 写入的记录，按 `(项目, 集合, 记录ID)` 存储 | 同上 | 同上 |
 
-两层都走同一组存储接口（`src/store.js` 里的两个驱动实现同一套方法），`STORAGE` 环境变量切换。数据面板里看到的记录就是服务端这张表的真实内容；发布出去的应用与编辑器预览读的是同一份数据，所以「刷新不丢、换设备还在、别人打开也一致」。
+两层都走同一组存储接口（`src/store.js` 里的驱动实现同一套方法），`STORAGE` 环境变量切换。数据面板里看到的记录就是服务端这张表的真实内容；发布出去的应用与编辑器预览读的是同一份数据，所以「刷新不丢、换设备还在、别人打开也一致」。Turso 不可达时自动回落本地 SQLite，服务不会因此不可用。
 
 **③ 生成物跑在 sandbox iframe 里**
 iframe 使用 `sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"`，**不给 `allow-same-origin`**。用户生成的任意代码拿不到主站的 DOM、Cookie 和存储；发布页 `/p/<slug>` 也只是同一套沙箱外壳，不把用户 HTML 直接挂在主站源下。
@@ -154,10 +193,10 @@ iframe 使用 `sandbox="allow-scripts allow-forms allow-modals allow-popups allo
 真实模型走流式生成；没有 Key 时走内置生成器。两者产出的事件流、数据结构完全一致，前端不需要区分。
 
 **⑤ 零第三方依赖**
-HTTP 用 `node:http`，存储用 `node:sqlite`（或纯 HTTP 的 Upstash REST），模型调用用内置 `fetch`，`.env` 自己解析。收益：`git clone` 后直接 `node server.js`，没有 `node_modules`，部署不会被依赖和构建拖累，整份代码可以逐行读。
+HTTP 用 `node:http`，存储用 `node:sqlite`（或纯 HTTP 的 Turso / Upstash REST），模型调用用内置 `fetch`，`.env` 自己解析。收益：`git clone` 后直接 `node server.js`，没有 `node_modules`，部署不会被依赖和构建拖累，整份代码可以逐行读。
 
 **⑥ 存储按部署环境切换**
-本地/容器用 SQLite（单文件、零运维）；免费托管平台的磁盘是临时的，所以云端切到 Upstash Redis REST（纯 HTTP，零依赖）。两者实现同一组接口，`STORAGE` 环境变量切换。
+本地/容器用 SQLite（单文件、零运维）；免费托管平台的磁盘通常是临时的，所以云端优先走 **Turso（云 SQLite）**——同一个 SQLite 方言、同一套 SQL，只把「怎么执行 SQL」抽成适配器，业务代码一行不改；Upstash Redis 是备选路径。Turso 连不上时自动回落本地 SQLite。
 
 ## 5. 目录结构
 
@@ -170,13 +209,19 @@ atoms-demo/
 │  ├─ mock-builder.js     # Mock 模式的内置生成器（业务模板 → 单文件应用）
 │  ├─ runtime.js          # 注入到生成物里的运行时 SDK 与注入逻辑
 │  ├─ share.js            # 发布页外壳（沙箱 iframe）
-│  └─ store.js            # 存储层：SQLite / Upstash Redis 两套驱动
+│  └─ store.js            # 存储层：SQLite / Turso（云 SQLite）/ Upstash Redis 三套驱动
 ├─ public/
 │  ├─ index.html          # 工作台 + 项目工作台
 │  ├─ app.js              # 前端状态与交互
 │  ├─ styles.css
 │  └─ bridge.js           # 宿主桥接层（编辑器与分享页共用）
-└─ tools/smoke.mjs        # 端到端冒烟测试
+└─ tools/
+   ├─ smoke.mjs           # 端到端冒烟测试（11 组：含版本导出/恢复/源码视图）
+   ├─ turso-test.mjs      # Turso 驱动一致性测试（24 项）
+   ├─ turso-mock.mjs      # hrana v2 协议模拟服务（供驱动离线测试）
+   ├─ test-mock.mjs       # Mock 生成器分类测试
+   ├─ test-live.mjs       # 真实模型全链路验收
+   └─ diag-llm.mjs / debug-stream.mjs  # 模型连接诊断
 ```
 
 ## 6. 接口一览
@@ -204,13 +249,19 @@ atoms-demo/
 
 ## 7. 测试
 
-服务启动后执行端到端冒烟测试（覆盖工作区 → 建项目 → 流式生成 → 数据读写 → 发布 → 分享页 → 二次迭代）：
+服务启动后执行端到端冒烟测试（11 组：注册登录 → 建项目 → 流式生成 → 数据读写 → 发布分享 → 二次迭代 → 权限隔离 → 复刻 → **版本源码/导出/恢复**）：
 
 ```bash
 node tools/smoke.mjs
 ```
 
 > 提示：服务已经接入真实模型时，`smoke.mjs` 里的生成步骤会真的调用模型 —— 耗时更长、也会消耗额度；只想验后端逻辑可以先清掉 Key 跑一次。
+
+Turso 云存储驱动有一致性测试：用 `tools/turso-mock.mjs`（hrana v2 协议模拟服务）在本地完整验证驱动的编解码与全部业务方法，不需要能连上外网：
+
+```bash
+node tools/turso-test.mjs        # 24 项：账号/会话/项目/版本/数据层/配置/级联删除/鉴权
+```
 
 生成器（Mock 模式）单独有测试，覆盖 10 类需求落到哪一类产物：
 
@@ -237,11 +288,16 @@ docker build -t atoms-demo .
 docker run -p 8080:8080 -e STORAGE=sqlite atoms-demo
 ```
 
-**方式 B：Render 免费实例 + Upstash Redis**（推荐，仓库里已附 `render.yaml`）
+**方式 B：Render / Railway 免费实例 + Turso 云 SQLite**（推荐，磁盘非持久的平台首选）
+
+1. 在 [Turso](https://turso.tech/) 建一个免费数据库，拿到 `libsql://…` 地址与 Auth Token；
+2. 平台新建 Web Service 指向本仓库，`buildCommand` 留空，`startCommand` 为 `node server.js`；
+3. 配置 `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`（以及可选的 `LLM_*`）——`STORAGE` 可以不填，检测到 Turso 凭证后自动启用云端。
+
+**方式 B'：Render 免费实例 + Upstash Redis**（备选，仓库里已附 `render.yaml`）
 
 1. 在 Upstash 建一个免费 Redis，拿到 REST URL 与 Token；
-2. Render 新建 Web Service 指向本仓库，`buildCommand` 留空，`startCommand` 为 `node --disable-warning=ExperimentalWarning server.js`；
-3. 配置 `STORAGE=redis`、`UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN`，以及可选的 `LLM_*`。
+2. 配置 `STORAGE=redis`、`UPSTASH_REDIS_REST_URL`、`UPSTASH_REDIS_REST_TOKEN`。
 
 ## 9. 已知限制
 

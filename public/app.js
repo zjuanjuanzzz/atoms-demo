@@ -261,7 +261,7 @@ const PROVIDER_PRESETS = [
   { key: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', note: '国内可直连 · 性价比高' },
   { key: 'moonshot', label: 'Kimi', baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-latest', note: '国内可直连' },
   { key: 'siliconflow', label: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', model: 'deepseek-ai/DeepSeek-V3', note: '模型选择多' },
-  { key: 'glm', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-plus', note: '' },
+  { key: 'glm', label: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash', note: 'glm-4-flash 免费' },
   { key: 'qwen', label: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus', note: '' },
   { key: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', note: '需要能访问 openai.com' },
 ];
@@ -816,24 +816,59 @@ function renderChromeUrl() {
     : `atoms.local / ${state.project.id.slice(0, 14)}`;
 }
 
-/** 运行时错误 → 触发 Ada 的第二轮自动修复（每个新版本只尝试一次） */
+/** 运行时错误浮层：生成物在 iframe 里抛错时显式呈现，而不是只在控制台里沉默 */
+let runtimeBarTimer;
+function showRuntimeError(message, canAutofix) {
+  let bar = $('runtimeErrorBar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'runtimeErrorBar';
+    Object.assign(bar.style, {
+      position: 'fixed', left: '50%', transform: 'translateX(-50%)', bottom: '64px',
+      zIndex: '60', maxWidth: 'min(720px, calc(100vw - 32px))', display: 'flex',
+      alignItems: 'center', gap: '10px', padding: '10px 14px',
+      background: '#fef3f2', color: '#b42318', border: '1px solid #fda29b',
+      borderRadius: '10px', boxShadow: '0 8px 24px rgba(180,35,24,.12)',
+      font: '12.5px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
+    });
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = `
+    <span style="font-size:16px">🐞</span>
+    <div style="flex:1;min-width:0">
+      <b>生成物运行时报错</b>
+      <div style="word-break:break-all;opacity:.85">${esc(message)}</div>
+      ${canAutofix
+        ? '<div style="opacity:.7">质检 Agent 正在自动修复并生成新版本…</div>'
+        : '<div style="opacity:.7">Mock 演示模式不做自动修复；接入真实模型后会自动修复并生成新版本</div>'}
+    </div>
+    <button style="border:0;background:transparent;color:#b42318;cursor:pointer;font-size:14px;padding:4px" title="关闭">✕</button>`;
+  bar.querySelector('button').addEventListener('click', () => { bar.style.display = 'none'; });
+  bar.style.display = 'flex';
+  clearTimeout(runtimeBarTimer);
+  runtimeBarTimer = setTimeout(() => { bar.style.display = 'none'; }, 15000);
+}
+
+/** 运行时错误 → 显式呈现；真实模型下再触发 Ada 的自动修复（每个新版本只尝试一次） */
 async function onRuntimeError(message) {
+  showRuntimeError(message, state.health?.llm === 'live');
   const versionId = state.currentVersionId;
   if (!versionId || !state.project) return;
   if (!state.freshVersions.has(versionId) || state.autofixTried.has(versionId)) return;
   if (state.health?.llm !== 'live') return;
   state.autofixTried.add(versionId);
-  toast('质检 Agent 捕获到运行时错误，正在自动修复…');
   try {
     const res = await api(`/api/projects/${state.project.id}/autofix`, { method: 'POST', body: { error: message } });
     if (res.fixed) {
       await reloadProject();
       renderChat();
       renderPreview(res.version.id);
-      toast('已自动修复并生成新版本');
+      const bar = $('runtimeErrorBar');
+      if (bar) bar.style.display = 'none';
+      toast('运行时报错已自动修复，并生成新版本');
     }
   } catch {
-    /* 修复失败不打扰用户，控制台里已经保留了原始报错 */
+    /* 修复失败不打扰用户，浮层里已经保留了原始报错 */
   }
 }
 

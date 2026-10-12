@@ -44,12 +44,39 @@ loadEnvFile();
 const PORT = Number(process.env.PORT || 8787);
 mkdirSync(DATA_DIR, { recursive: true });
 
-const store = await createStore({
-  driver: process.env.STORAGE === 'redis' ? 'redis' : 'sqlite',
-  file: path.join(DATA_DIR, 'atoms.db'),
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+/**
+ * 存储驱动选择：
+ *   - 显式 STORAGE=redis / STORAGE=turso / STORAGE=sqlite 按指定的来
+ *   - 未指定但配置了 TURSO_DATABASE_URL + TURSO_AUTH_TOKEN：自动启用云端
+ *     （部署平台的磁盘通常是临时的，数据落云才真正持久）
+ *   - Turso 连不上（网络不通 / 凭证失效）不致命：自动回落本地 SQLite，服务照常可用
+ */
+async function initStore() {
+  const explicit = (process.env.STORAGE || '').toLowerCase();
+  if (explicit === 'redis') {
+    return createStore({
+      driver: 'redis',
+      url: process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    });
+  }
+  const wantsTurso = explicit === 'turso'
+    || (!explicit && process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN);
+  if (wantsTurso) {
+    try {
+      return await createStore({
+        driver: 'turso',
+        url: process.env.TURSO_DATABASE_URL,
+        token: process.env.TURSO_AUTH_TOKEN,
+      });
+    } catch (err) {
+      console.error('[store] Turso 云端初始化失败，回退本地 SQLite：', err.message);
+    }
+  }
+  return createStore({ driver: 'sqlite', file: path.join(DATA_DIR, 'atoms.db') });
+}
+
+const store = await initStore();
 
 /** 环境变量里的模型配置，作为「界面没配」时的兜底 */
 const ENV_LLM = {
