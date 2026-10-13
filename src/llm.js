@@ -15,6 +15,21 @@ const WB_CLOUD_PATH = '/.cloud/llm';
 const WB_CLOUD_KEY_HEADER = 'x-wb-webapp-access-key';
 
 /**
+ * `LLM_MODEL=auto` 时从平台模型列表里挑一个具体模型：
+ * 列表首项是 `auto`/`default` 这类路由别名，直接取第一个会得到别名本身，
+ * `/api/health` 就报不出真实模型名。按下面的偏好顺序挑（写代码优先用快模型）。
+ */
+const MODEL_PREFERENCE = [
+  'deepseek-v4.1-flash',
+  'deepseek-v4-flash',
+  'glm-5.3',
+  'kimi-k2.5',
+  'minimax-m3',
+  'hunyuan-chat',
+];
+const isAlias = (id) => /^(auto|default)$/i.test(String(id || ''));
+
+/**
  * 归一化接口地址，帮用户挡掉最常见的几类填错：
  *   1. 填成服务商的控制台/官网（platform.deepseek.com 之类）
  *   2. 忘记带 /v1
@@ -57,19 +72,24 @@ export function createLLM(config) {
     : (normalizeBaseUrl(config.baseUrl) || 'https://api.openai.com/v1');
   const model = config.model || 'gpt-4o-mini';
 
-  /** 平台云通道：模型列表懒加载 + 缓存（model 配成 auto 或留空时自动挑第一个可用模型） */
+  /** 平台云通道：模型列表懒加载 + 缓存（model 配成 auto 或留空时自动挑一个可用模型） */
   let cloudModelCache = '';
-  async function resolveCloudModel() {
+  /** 最近一次响应里平台回填的真实模型名——比列表推断更准，/api/health 优先用它 */
+  let lastModelId = '';
+  async function resolveCloudModel({ attempts = 1, timeoutMs = 8000 } = {}) {
     if (model && model !== 'auto') return model;
     if (cloudModelCache) return cloudModelCache;
-    const res = await fetch(`${baseUrl}${WB_CLOUD_PATH}/models`, {
+    const res = await fetchWithRetry(`${baseUrl}${WB_CLOUD_PATH}/models`, {
       headers: cloudHeaders(),
-      signal: AbortSignal.timeout(15000),
-    });
+      signal: AbortSignal.timeout(timeoutMs),
+    }, attempts);
     const list = await res.json().catch(() => []);
-    const usable = Array.isArray(list) ? list.find((m) => m && m.disabled !== true && m.id) : null;
-    if (!usable) throw new Error(`平台云通道未返回可用模型（HTTP ${res.status}）`);
-    cloudModelCache = usable.id;
+    const ids = Array.isArray(list)
+      ? list.filter((m) => m && m.id && m.disabled !== true).map((m) => m.id)
+      : [];
+    const concrete = MODEL_PREFERENCE.find((id) => ids.includes(id)) || ids.find((id) => !isAlias(id));
+    if (!concrete) throw new Error(`平台云通道未返回可用模型（HTTP ${res.status}）`);
+    cloudModelCache = concrete;
     return cloudModelCache;
   }
 
@@ -81,6 +101,25 @@ export function createLLM(config) {
       Referer: `${baseUrl}/`,
       ...extra,
     };
+  }
+
+  /**
+   * 网关偶发抖动（连接超时 / 连接被重置）不该让一次生成直接失败：
+   * 对「纯网络层」错误做短退避重试；HTTP 状态码错误与用户取消都不重试。
+   */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function fetchWithRetry(url, init, attempts = 3) {
+    let lastErr;
+    for (let i = 0; i < attempts; i += 1) {
+      try {
+        return await fetch(url, init);
+      } catch (err) {
+        if (err.name === 'AbortError' || init?.signal?.aborted) throw err;
+        lastErr = err;
+        if (i < attempts - 1) await sleep(600 * (i + 1));
+      }
+    }
+    throw lastErr;
   }
 
   async function request({ messages, stream, temperature = 0.7, maxTokens = 8000, jsonMode = false, signal, allowRetry = true }) {
@@ -101,7 +140,7 @@ export function createLLM(config) {
       : { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
     let res;
     try {
-      res = await fetch(url, {
+      res = await fetchWithRetry(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -121,7 +160,8 @@ export function createLLM(config) {
       if (looksLikeHtml) {
         const blocked = /Request Blocked|Cloudflare|cf-error|Access denied|Forbidden/i.test(text);
         throw new Error(
-          `这个地址返回的是网页，不是 API 响应${blocked ? '（请求被网关拦截）' : ''}。`
+          `这个地址返回的是网页，不是 API 响应（HTTP ${res.status}，${url}）${blocked ? '（请求被网关拦截）' : ''}。`
+          + `响应开头：${detail.slice(0, 120)}。`
           + `请确认填的是接口地址而不是服务商的控制台或官网地址 —— 例如 DeepSeek 要填 https://api.deepseek.com/v1，`
           + `而不是 platform.deepseek.com。`,
         );
@@ -159,6 +199,7 @@ export function createLLM(config) {
     }
     const res = await request({ messages, stream: false, temperature, maxTokens, jsonMode, signal });
     const json = await res.json();
+    if (json.model) lastModelId = String(json.model);
     return json.choices?.[0]?.message?.content ?? '';
   }
 
@@ -195,6 +236,7 @@ export function createLLM(config) {
           if (json && typeof json === 'object' && json.error && !json.choices) {
             throw new Error(`模型服务返回错误：${json.error.message || JSON.stringify(json.error).slice(0, 200)}`);
           }
+          if (json.model) lastModelId = String(json.model);
           const choice = json.choices?.[0] || {};
           const delta = choice.delta || {};
           if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -219,8 +261,15 @@ export function createLLM(config) {
     mode: hasKey ? 'live' : 'mock',
     model: hasKey ? model : 'mock-builder',
     baseUrl,
-    /** 云通道下 model=auto 时返回真实模型名（含一次列表请求）；其余场景直接同步返回 */
-    getModel: async () => (cloud ? resolveCloudModel() : model),
+    /**
+     * 云通道下 model=auto 时应答「真实模型名」：
+     * 优先用最近一次响应里平台回填的模型名，没有历史请求时再按偏好列表挑一个。
+     */
+    getModel: async () => {
+      if (!cloud) return model;
+      if (lastModelId) return lastModelId;
+      try { return await resolveCloudModel(); } catch { return model; }
+    },
     chat,
     chatStream,
   };

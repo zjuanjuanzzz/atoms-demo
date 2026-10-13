@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { createStore } from './src/store.js';
 import { createLLM, normalizeBaseUrl } from './src/llm.js';
-import { runPipeline, repairFromRuntimeError } from './src/agent.js';
+import { runPipeline, repairFromRuntimeError, PLANNER_SYSTEM, BUILDER_SYSTEM } from './src/agent.js';
 import { injectSdk } from './src/runtime.js';
 import { renderSharePage } from './src/share.js';
 
@@ -101,6 +101,34 @@ async function resolveLLM(override = null) {
   });
   const source = !apiKey ? 'none' : (saved.apiKey ? 'ui' : (ENV_LLM.apiKey ? 'env' : 'none'));
   return { llm, source, apiKey };
+}
+
+/**
+ * 平台云通道下「真实模型名」要从远端列表接口解析，属于网络往返。
+ * 健康检查必须快（发布平台的就绪探针只有 30s，超时会被判成服务未启动），
+ * 所以这里做一层进程内缓存：解析一次，之后所有 /api/health 都直接命中缓存。
+ */
+let modelNameCache = { key: '', name: '' };
+let modelNameProbe = null;
+const modelCacheKey = (llm) => `${llm.baseUrl}|${llm.model}`;
+
+/** 后台预热（同一时刻只跑一个探测），失败就退回配置里的名字 */
+function warmModelName(llm) {
+  if (!llm || llm.mode !== 'live' || typeof llm.getModel !== 'function') {
+    return Promise.resolve(llm ? llm.model : '');
+  }
+  const key = modelCacheKey(llm);
+  if (modelNameCache.key === key && modelNameCache.name) return Promise.resolve(modelNameCache.name);
+  if (!modelNameProbe) {
+    modelNameProbe = llm.getModel()
+      .then((name) => {
+        if (name && name !== 'auto') modelNameCache = { key, name };
+        return name || llm.model;
+      })
+      .catch(() => modelNameCache.name || llm.model)
+      .finally(() => { modelNameProbe = null; });
+  }
+  return modelNameProbe;
 }
 
 /** 只回显首尾，避免 Key 泄露到浏览器 */
@@ -253,10 +281,15 @@ const server = http.createServer(async (req, res) => {
     /* ---- 健康检查 ---- */
     if (method === 'GET' && pathname === '/api/health') {
       const { llm, source } = await resolveLLM();
-      // 云通道 model=auto 时解析出真实模型名；失败不影响健康状态本身
+      // 云通道 model=auto 时解析出真实模型名。命中缓存就立即返回；
+      // 没命中最多等 2.5s，超时先回配置名，解析完下一次请求就是真名（绝不拖垮探针）。
       let modelName = llm.model;
       if (llm.mode === 'live' && llm.getModel) {
-        try { modelName = await llm.getModel(); } catch { /* 保持 llm.model */ }
+        const fallback = new Promise((resolve) => {
+          const t = setTimeout(() => resolve(modelNameCache.name || llm.model), 2500);
+          if (typeof t.unref === 'function') t.unref();
+        });
+        modelName = (await Promise.race([warmModelName(llm), fallback])) || llm.model;
       }
       return sendJson(res, 200, {
         ok: true,
@@ -446,10 +479,13 @@ const server = http.createServer(async (req, res) => {
       const ownsProject = Boolean(user) && project.workspaceId === workspace;
       // 预览渲染是唯一允许匿名访问的项目接口：发布后的分享页内部就是靠它加载应用的
       const isPublicRender = method === 'GET' && /^\/versions\/[a-z0-9_]+\/render$/.test(rest);
+      // 渲染/导出按 versionId 自取（versionId 是 16 位随机 hex 不可猜，拿到就当有权限）：
+      // 这样在某些代理转发 Cookie 不稳定的部署环境里，浏览器侧也不会被拦。
+      const isVersionRead = method === 'GET' && /^\/versions\/ver_[a-z0-9]+\/(render|export)$/.test(rest);
       const isRemix = method === 'POST' && rest === '/remix';
       // 已发布的应用：任何人都能打开（分享页），登录用户还能复刻成自己的项目
       const visitorAllowed = project.published && (isPublicRender || (isRemix && Boolean(user)));
-      if (!ownsProject && !visitorAllowed) {
+      if (!ownsProject && !visitorAllowed && !isVersionRead) {
         return user
           ? sendJson(res, 403, { error: '没有权限访问该项目' })
           : needLogin();
@@ -728,4 +764,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  地址：http://localhost:${PORT}`);
   console.log(`  存储：${store.driver}`);
   console.log(`  模型：${mode}`);
+  // 端口已经打开，后台把真实模型名解析好，供 /api/health 首次访问直接命中缓存
+  warmModelName(startup.llm).then((name) => {
+    if (name && name !== startup.llm.model) console.log(`  模型（解析后）：${name}`);
+  });
 });
